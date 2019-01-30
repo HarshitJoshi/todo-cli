@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'fileutils'
+require 'openssl'
 
 $status_symbol = {false => "[ ]", true => "[x]"}
 
@@ -13,12 +14,71 @@ $list_file_path = $outputs_folder_path + $list_file
 $log_file = "todo_log_#{Time.now.strftime("%y-%m-%d")}.txt"
 $log_file_path = $outputs_folder_path + $log_file
 
+$alg = "AES-256-CBC"
+$encrypted_file = "todo.enc"
+$encrypted_file_path = $outputs_folder_path + $encrypted_file 
+
 $last_goal_id = 0
 $list_modified = false
 $goals = []
 $completed = []
 $not_completed = []
 
+def get_passphrase()
+    print "Enter a passphrase: "
+    passphrase = STDIN.gets.chomp 
+    STDOUT.flush 
+    raise "Invalid passphrase" if passphrase.nil? || passphrase.empty?
+    digest = OpenSSL::Digest.new('sha256', passphrase)
+    return digest.digest
+end
+
+def setup_encrypt_decrypt()
+    $cipher = OpenSSL::Cipher.new($alg)
+    $iv = $cipher.random_iv
+end
+
+def encrypt(file)
+    if File.file?(file)
+        $cipher.encrypt
+        $cipher.key = get_passphrase() 
+        $cipher.iv = $iv
+        buf = "" 
+        File.open($encrypted_file_path, 'wb') do |outf|
+            File.open(file, 'rb') do |inf|
+                while inf.read(4096, buf)
+                    outf << $cipher.update(buf)
+                end
+                outf << $cipher.final
+            end
+        end
+    end
+end
+
+def decrypt(encrypted_file_path)
+    if File.file?(encrypted_file_path)
+        $cipher.decrypt
+        $cipher.key = get_passphrase() 
+        $cipher.iv = $iv
+        buf = "" 
+        File.open($list_file_path, 'wb') do |outf|
+            File.open(encrypted_file_path, 'rb') do |inf|
+                while inf.read(4096, buf)
+                    outf << $cipher.update(buf)
+                end
+                outf << $cipher.final
+            end
+        end
+    end
+end
+    
+def encryption_status()
+    status = false
+    if File.file?($encrypted_file_path)
+        status = true
+    end
+    return status
+end
 
 def check_file(file)
   unless File.file?(file)
@@ -171,17 +231,21 @@ end
 # parsed information from the strings in str_goals
 #
 def load_from_file(input_file)
-  check_file(input_file)
-  str_goals = []
-  File.open(input_file, "r") do |file|
-    file.each_line do |line|
-      str_goals.push(line)
+    if File.file?($encrypted_file_path)
+        decrypt($encrypted_file_path)
     end
-  end
+    check_file(input_file)
+    str_goals = []
 
-  $last_goal_id = str_goals.length
-  
-  convert_to_goals(str_goals)
+    File.open(input_file, "r") do |file|
+        file.each_line do |line|
+            str_goals.push(line)
+        end
+    end
+
+    $last_goal_id = str_goals.length
+
+    convert_to_goals(str_goals)
 end
 
 
@@ -238,8 +302,11 @@ def display_help()
   puts
   puts "      -pg,  --purge         Clears the entire list by replacing the goals array with"
   puts "                            an empty list"
+  puts
+  puts "      -enc,  --encrypt      Encrypts the current todo file"
+  puts
+  puts "      -dec,  --decrypt      Decrypts the encrypted todo file"
 end
-
 
 
 # Reorders the list after editing (adding/removing) current
@@ -345,6 +412,20 @@ def process_args()
       $list_modified = true
     end
 
+  when '-enc', '--encrypt'
+      if encryption_status()
+          puts "Your todo list is already encrypted, you can either load it or choose to remove encryption from the list"
+      else
+          encrypt($list_file_path)
+          puts "Todo list successfully encrypted"
+      end
+  when '-dec', '--decrypt'
+      unless encryption_status()
+          puts "Your todo list is not encrypted"
+      else
+          decrypt($encrypted_file_path)
+          puts "Todo list successfully decrypted"
+      end
   else
     if $goals.empty?
       puts "Your todo list is currently empty, here's a list of options you can do:"
@@ -359,13 +440,24 @@ end
 
 # The "main" function
 def run()
-  load_from_file($list_file_path)
-  process_args()
-  update_list()
-  if $list_modified
-    display_list()
-    save_to_file($list_file_path)
-  end
+    load_from_file($list_file_path)
+    process_args()
+    update_list()
+    if $list_modified
+        display_list()
+        save_to_file($list_file_path)
+        if (ARGV[0].eql? "-enc") || (ARGV[0].eql? "-encrypt")
+            encrypt($list_file_path)
+            File.delete($list_file_path)
+        end
+        if (ARGV[0].eql? "-dec") || (ARGV[0].eql? "-decrypt")
+            File.delete($encrypted_file_path)
+        end
+    end
+    if encryption_status()
+        File.delete($list_file_path)
+    end
 end
 
+setup_encrypt_decrypt()
 run()
